@@ -9,11 +9,18 @@ from .observability import log_event
 
 
 def get_spark(app_name: str = "collections_platform") -> SparkSession:
-    """On Databricks this returns the existing session; locally it builds one.
+    """Return the session Databricks already gave us; build one only locally.
 
-    `getOrCreate` is what makes the same code runnable in a pytest fixture and on
-    a cluster without a branch.
+    On serverless there is no JVM in this process and no cluster to configure:
+    the job starts with a Spark Connect session already attached. Calling
+    `builder.appName(...).getOrCreate()` there is not harmless -- `spark.app.name`
+    is a static conf, and setting a static conf on an existing Connect session
+    raises. So: take the active session if there is one, and only fall back to
+    building a local session (pytest on a laptop) when there is not.
     """
+    active = SparkSession.getActiveSession()
+    if active is not None:
+        return active
     return SparkSession.builder.appName(app_name).getOrCreate()
 
 

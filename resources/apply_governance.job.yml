@@ -1,0 +1,38 @@
+# ---------------------------------------------------------------------------
+# apply_governance: masks, row filters, grants.
+# Run AFTER the pipeline, because ALTER TABLE ... SET MASK needs the table to
+# exist. ${catalog} inside the .sql file is substituted by the runner
+# (sql_runner.py), NOT by the CLI -- bundle interpolation does not reach files
+# the YAML merely points at.
+# ---------------------------------------------------------------------------
+resources:
+  jobs:
+    apply_governance:
+      name: "[${bundle.target}] apply_governance"
+
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: ${var.environment_version}
+            dependencies:
+              - ../dist/*.whl
+
+      tasks:
+        - task_key: governance
+          environment_key: default
+          python_wheel_task:
+            package_name: collections_platform
+            entry_point: apply-governance
+            parameters:
+              - --catalog=${var.catalog}
+              - --silver-schema=${var.silver_schema}
+              - --gold-schema=${var.gold_schema}
+              - --ops-schema=${var.ops_schema}
+              # Principals: a group on a real workspace, the deploying user on
+              # Free Edition, which has no account groups.
+              - --analyst-principal=${var.analyst_principal}
+              - --ops-group=${var.ops_group}
+              - --engineer-group=${var.engineer_group}
+              # ${workspace.file_path} IS interpolated -- this is bundle YAML --
+              # and it already starts with /Workspace.
+              - --sql-path=${workspace.file_path}/sql/uc_governance.sql

@@ -22,7 +22,7 @@
 # NOTE: I am not certain the `volumes` resource type exists in every Databricks
 # CLI version -- it is recent. If `bundle validate` rejects it, drop that block
 # and let sql/00_bootstrap.sql create the volume; nothing else depends on it
-# being bundle-managed.
+# being bundle-managed. (Validated with CLI v1.12.1.)
 
 resources:
   schemas:

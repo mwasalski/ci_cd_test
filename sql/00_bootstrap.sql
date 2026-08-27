@@ -28,6 +28,10 @@
 -- data in its own storage account with its own lifecycle and retention policy --
 -- which is exactly the argument you want to be able to make about a catalog
 -- holding debtor data.
+--
+-- On Free Edition, leave it off: custom workspace storage locations are not
+-- available there, so the catalog uses the metastore root and that is the only
+-- option. Catalog creation itself works.
 CREATE CATALOG IF NOT EXISTS dev_collections
   COMMENT 'Debt collection platform - dev. Contains pseudonymised personal data.';
 
@@ -67,7 +71,7 @@ CREATE VOLUME IF NOT EXISTS bronze.landing
 -- Everything the jobs write is created by saveAsTable(). These three are
 -- reference/config data that has to exist before the first run, so they are
 -- declared here with an explicit schema rather than being inferred from
--- whatever CSV someone uploaded first.
+-- whatever CSV someone uploaded first. `seed_synthetic` fills them on dev.
 
 CREATE TABLE IF NOT EXISTS silver.portfolios (
   portfolio_id      STRING  NOT NULL COMMENT 'Natural key from the acquisition system',
@@ -92,25 +96,23 @@ CREATE TABLE IF NOT EXISTS silver.forecast_curve (
   forecast_pct      DECIMAL(9,6) NOT NULL COMMENT 'Cumulative % of face value expected by this month'
 ) COMMENT 'Underwriting recovery curve. Drives ERC. Investing only.';
 
--- Quarantine lives in `ops`, not next to the clean tables. Two reasons:
--- analysts must never join it by accident, and it needs a different retention
--- policy -- bad rows are an operational artefact, not a business record.
-CREATE TABLE IF NOT EXISTS ops.cases_quarantine (
-  case_reference  STRING,
-  _dq_failures    ARRAY<STRING> COMMENT 'Which rules the row broke',
-  _batch_id       STRING,
-  _source_file    STRING,
-  _ingested_at    TIMESTAMP
-) COMMENT 'DQ rejects. PII policy IS applied here too - a quarantined row is still personal data.';
+-- The quarantine tables (`ops.cases_quarantine`, `ops.payments_quarantine`) are
+-- deliberately NOT declared here. Their shape is "every landed column, plus
+-- _dq_failures, plus the audit columns", which is derived from the ingest
+-- contract -- writing that out by hand gives you a second definition that
+-- drifts, and the append then fails on a schema mismatch. The first ingest run
+-- creates them.
 
 -- ---------------------------------------------------------------------------
 -- 5. Verify
 -- ---------------------------------------------------------------------------
+-- The catalog's OWN information_schema, not `system.information_schema`: every
+-- UC catalog exposes it to anyone who can use the catalog, whereas the system
+-- catalog needs a separate grant and is not enabled on every workspace.
 SELECT 'schemas' AS object, count(*) AS n
-FROM   system.information_schema.schemata
-WHERE  catalog_name = 'dev_collections' AND schema_name IN ('bronze','silver','gold','ops')
+FROM   dev_collections.information_schema.schemata
+WHERE  schema_name IN ('bronze','silver','gold','ops')
 UNION ALL
 SELECT 'volumes', count(*)
-FROM   system.information_schema.volumes
-WHERE  volume_catalog = 'dev_collections';
+FROM   dev_collections.information_schema.volumes;
 -- Expect: schemas = 4, volumes = 1

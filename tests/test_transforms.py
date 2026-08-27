@@ -137,6 +137,27 @@ def test_sla_pending_is_not_breached(spark):
     assert all(r["sla_met"] == "PENDING" for r in out)
 
 
+def test_owned_cases_never_enter_the_servicing_fact(spark):
+    """One case table feeds both domains, so the split has to happen in the
+    transform. A bought case has no client and no commission; letting it through
+    produces a fact row with a NULL client_id that quietly dilutes every
+    per-client aggregate."""
+    payments, cases, contracts = _servicing_inputs(spark)
+    owned = spark.createDataFrame(
+        [("CASE_OWNED", None, None, None)],
+        "case_reference string, client_id string, placed_date date, first_contact_date date",
+    )
+    owned_payment = spark.createDataFrame(
+        [("PAY9", "CASE_OWNED", date(2023, 6, 15), Decimal("500.00"))],
+        "payment_id string, case_reference string, payment_date date, amount decimal(18,2)",
+    )
+    out = build_servicing_performance(
+        payments.unionByName(owned_payment), cases.unionByName(owned), contracts
+    ).collect()
+
+    assert {r["case_reference"] for r in out} == {"CASE_1"}
+
+
 def test_sla_met_boundary_is_inclusive(spark):
     """Contacted exactly on the target day = MET, not BREACHED."""
     payments, cases, contracts = _servicing_inputs(spark)

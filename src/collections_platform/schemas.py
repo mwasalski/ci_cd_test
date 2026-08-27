@@ -24,14 +24,24 @@ MONEY = DecimalType(18, 2)
 RATE = DecimalType(9, 6)
 
 # --------------------------------------------------------------------------
-# Bronze: what the originator actually sends. Everything is a string except
-# what we are contractually certain of -- cast in silver, where failures are
-# visible and quarantinable instead of being a NULL in a load you never look at.
+# Landed (bronze): what the originator actually sends. EVERYTHING is a string.
+#
+# That is not laziness, it is the contract: a CSV has no types. Reading it with
+# an explicit typed schema makes Spark cast silently during the scan, so a bad
+# value becomes a NULL (or, with ANSI mode on -- the serverless default -- an
+# exception that kills the whole job for one bad row). We read strings, compare
+# the header against this contract to detect drift, then cast explicitly in
+# `conform()` where a failure is visible and the row is quarantinable.
 # --------------------------------------------------------------------------
 PORTFOLIO_CASE_RAW = StructType(
     [
         StructField("case_reference", StringType(), nullable=False),
         StructField("portfolio_id", StringType(), nullable=False),
+        # Servicing placements only. NULL on a portfolio we bought outright --
+        # that is what separates the two fact domains at the source.
+        StructField("client_id", StringType(), nullable=True),
+        StructField("placed_date", StringType(), nullable=True),
+        StructField("first_contact_date", StringType(), nullable=True),
         StructField("national_id", StringType(), nullable=True),
         StructField("debtor_name", StringType(), nullable=True),
         StructField("debtor_email", StringType(), nullable=True),
@@ -57,11 +67,32 @@ PAYMENT_RAW = StructType(
     [
         StructField("payment_id", StringType(), nullable=False),
         StructField("case_reference", StringType(), nullable=False),
-        StructField("payment_date", DateType(), nullable=False),
-        StructField("amount", MONEY, nullable=False),
+        StructField("payment_date", StringType(), nullable=False),
+        StructField("amount", StringType(), nullable=False),
         StructField("channel", StringType(), nullable=True),
     ]
 )
+
+# --------------------------------------------------------------------------
+# The cast plan: raw string -> the type the rest of the platform relies on.
+#
+# Applied by `ingest.conform()` with try_cast, so an unparseable value becomes
+# NULL *at a known step* instead of blowing up the scan. The DQ rules are
+# NULL-safe (see dq.apply_rules), so those rows land in quarantine with the
+# rule name attached rather than disappearing.
+# --------------------------------------------------------------------------
+CASE_CASTS: dict[str, str] = {
+    "original_balance": "decimal(18,2)",
+    "current_balance": "decimal(18,2)",
+    "default_date": "date",
+    "placed_date": "date",
+    "first_contact_date": "date",
+}
+
+PAYMENT_CASTS: dict[str, str] = {
+    "payment_date": "date",
+    "amount": "decimal(18,2)",
+}
 
 # --------------------------------------------------------------------------
 # Gold: two fact domains. Different grain, different measures, different

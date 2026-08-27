@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "collections_platform"
+version = "0.1.0"
+description = "Debt-collection data platform: Investing + Servicing fact domains on Databricks"
+requires-python = ">=3.11"
+
+# NOTE: pyspark / delta-spark are NOT listed as runtime deps on purpose.
+# They are provided by the Databricks Runtime. Pinning them in the wheel is a
+# classic way to get a version conflict on the cluster at import time.
+dependencies = [
+    "pydantic>=2.7",
+]
+
+[project.optional-dependencies]
+# Installed on the cluster only for the test job, and locally for dev.
+dev = [
+    "pyspark==3.5.0",       # match DBR 15.4 LTS
+    "delta-spark==3.2.0",
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "chispa>=0.10",         # DataFrame assertions with readable diffs
+    "ruff>=0.5",
+    "mypy>=1.10",
+]
+
+[project.scripts]
+# These become the entry_point values used by python_wheel_task in the DAB.
+bootstrap-catalog = "collections_platform.entrypoints:bootstrap_catalog"
+apply-governance = "collections_platform.entrypoints:apply_governance"
+ingest-portfolio = "collections_platform.entrypoints:ingest_portfolio"
+build-investing = "collections_platform.entrypoints:build_investing"
+build-servicing = "collections_platform.entrypoints:build_servicing"
+build-features = "collections_platform.entrypoints:build_features"
+train-propensity = "collections_platform.entrypoints:train_propensity"
+run-tests = "collections_platform.entrypoints:run_tests"
+run-smoke = "collections_platform.entrypoints:run_smoke"
+seed-synthetic = "collections_platform.entrypoints:seed_synthetic"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "smoke: end-to-end checks that need a real catalog/schema (deselect with -m 'not smoke')",
+]
+# Fail loudly on a test that produces no assertion.
+addopts = "-ra --strict-markers"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_ignores = true
+# pyspark stubs are incomplete; don't let that block the build.
+ignore_missing_imports = true

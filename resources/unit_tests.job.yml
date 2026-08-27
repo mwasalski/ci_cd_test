@@ -1,0 +1,37 @@
+# ---------------------------------------------------------------------------
+# unit_tests: no catalog access, no real data. Runs the pytest suite on
+# serverless. This is the job your CI calls on every PR.
+#
+# Running the suite here rather than only on a laptop is the point: it executes
+# against the same Spark 4 / Python 3.12 / ANSI-on engine the pipeline runs on,
+# so "passes locally, fails in the job" stops being a category of bug.
+# ---------------------------------------------------------------------------
+resources:
+  jobs:
+    unit_tests:
+      name: "[${bundle.target}] unit_tests"
+
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: ${var.environment_version}
+            dependencies:
+              - ../dist/*.whl
+              # pytest is already in the serverless environment; naming it here
+              # anyway means the job does not silently change behaviour when a
+              # future environment version drops it.
+              - pytest>=8.0
+              - chispa>=0.10
+
+      tasks:
+        - task_key: pytest
+          environment_key: default
+          python_wheel_task:
+            package_name: collections_platform
+            entry_point: run-tests
+            parameters:
+              # ${workspace.file_path} IS interpolated -- this is bundle YAML --
+              # and it already starts with /Workspace. Prefixing it by hand is
+              # the old form the CLI now warns about.
+              - --path=${workspace.file_path}/tests
+              - --markers=not smoke

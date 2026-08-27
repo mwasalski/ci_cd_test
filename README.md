@@ -16,6 +16,22 @@ is a contract test that fails if anyone tries.
 
 ---
 
+## Runs on Databricks Free Edition, on serverless
+
+Free Edition is **serverless-only**: no cluster creation, no node types, no
+`spark_version`, no Scala, one workspace per account. This bundle is built for
+exactly that, which drives most of its non-obvious choices:
+
+| Constraint | What it forces |
+|---|---|
+| No `new_cluster` anywhere | every task declares an `environment_key`; compute config lives in a job-level `environments:` block, not a cluster spec |
+| Serverless wheel tasks ignore `libraries:` | dependencies (the wheel, pytest, chispa) go in `environments[].spec.dependencies` — this is the #1 reason a wheel task deploys fine and then can't import its own package |
+| Environment version **5** = Databricks Connect 18 / Spark 4 / Python 3.12 | pinned in one bundle variable and in `pyproject.toml`'s `[tool.databricks.environment]`; the two must move together |
+| **ANSI mode is on** (Spark 4 default) | landed strings are cast with `try_cast` in `ingest.conform()`, never with a plain `cast` that would kill the job for one bad row; `tests/conftest.py` turns ANSI on locally so the laptop and the job agree |
+| `input_file_name()` unsupported | `_source_file` comes from `_metadata.file_path` |
+| No account console, so no account groups | governance principals are bundle variables: the deploying user on dev, a group on a real workspace |
+| No cluster to attach to | `get_spark()` returns the *existing* session; building one would try to set a static conf on a live Connect session |
+
 ## Quick start
 
 ```bash
@@ -39,12 +55,17 @@ pip install build
 databricks bundle validate -t dev
 databricks bundle deploy   -t dev
 databricks bundle run bootstrap          -t dev   # schemas, volume, reference tables
-databricks bundle run seed_synthetic     -t dev   # pathological data into the volume
+databricks bundle run seed_synthetic     -t dev   # pathological data + reference tables
 databricks bundle run unit_tests         -t dev
 databricks bundle run collections_pipeline -t dev
 databricks bundle run apply_governance   -t dev   # masks, row filters, grants
 databricks bundle run smoke_test         -t dev
 ```
+
+Order matters exactly twice: `bootstrap` and `seed_synthetic` come before the
+pipeline (nothing to read otherwise), and `apply_governance` comes after it
+(`ALTER TABLE ... SET MASK` needs the table to exist, and the pipeline's
+`overwrite` replaces it).
 
 ### `${catalog}` in a .sql file
 
@@ -79,20 +100,53 @@ bundle exists, so it has to be paste-able as-is.
 | metastore, storage credential, **catalog** | Terraform / metastore admin, once | needs metastore-level privilege. If the pipeline's service principal can `CREATE CATALOG`, then a bug — or anyone who can merge a PR — can create or drop catalogs in prod. |
 | **schemas, volume** | `resources/schemas.yml` + `bootstrap` job | bundle-owned, so a fresh target works from one `deploy` |
 | **fact/dim tables** | the jobs, via `saveAsTable` | schema follows the code that writes them |
-| **reference tables** (`portfolios`, `client_contracts`, `forecast_curve`) | `bootstrap` | must exist *before* the first run, with explicit types — not inferred from whatever CSV landed first |
+| **reference tables** (`portfolios`, `client_contracts`, `forecast_curve`) | `bootstrap` declares, `seed_synthetic` fills | must exist *before* the first run, with explicit types — not inferred from whatever CSV landed first |
+| **quarantine tables** | the first ingest run | their shape is "every landed column + `_dq_failures` + audit columns", derived from the ingest contract. Hand-writing that DDL gives you a second definition that drifts, and the append then fails on a schema mismatch. |
 | **masks, row filters, grants** | `sql/uc_governance.sql` | enforced by UC on every read path, not by the pipeline |
+
+### Layers
+
+| Layer | What lives there |
+|---|---|
+| **bronze** | the landing volume — the raw originator files themselves. There is no bronze *table*: a copy of a CSV in Delta with no types and no DQ applied costs storage and buys nothing. |
+| **silver** | `cases`, `payments` (typed, deduplicated, DQ-passed, PII policy applied) plus the three reference tables |
+| **gold** | `fct_investing_performance`, `fct_servicing_performance`, `propensity_training_set` |
+| **ops** | `cases_quarantine`, `payments_quarantine` — rejected rows, with the rules they broke |
+
+One case feed produces **both** fact domains: a case carries an optional
+`client_id`. Non-NULL means a third-party placement (Servicing); NULL means a
+portfolio we bought (Investing). The Investing build drops placements because
+they have no purchase date, and the Servicing build filters `client_id IS NOT
+NULL` — `tests/test_transforms.py::test_owned_cases_never_enter_the_servicing_fact`
+is the guard.
 
 The pipeline jobs issue **no DDL at all**. That is deliberate: it means the
 pipeline service principal never needs `CREATE` on the catalog, so a bug in a
 transform cannot drop a schema. Least privilege is much easier to argue for when
 the code layout already reflects it.
 
-Local loop (faster, less faithful):
+### The local loop
+
+Two ways to run the suite locally, and `tests/conftest.py` handles both without
+a branch in your test code:
 
 ```bash
-pip install -e ".[dev]"
+# A. Against serverless, through Databricks Connect (same engine as the jobs).
+#    The dependency group in pyproject.toml is managed by:
+#      databricks environments setup-local
+pytest -m "not smoke" -v
+
+# B. Offline, against a local Spark. No workspace, no network.
+pip install -e ".[dev,local-spark]"
 pytest -m "not smoke" -v
 ```
+
+`local-spark` and `databricks-connect` are **mutually exclusive** — both ship a
+`pyspark` package, and installing both breaks the import. One per virtualenv.
+
+Either way the suite runs with ANSI mode on and Python 3.12, matching serverless
+environment version 5. The third place these same tests run is the `unit_tests`
+job, on serverless itself.
 
 ---
 
@@ -105,7 +159,8 @@ pytest -m "not smoke" -v
 | `pii.py::assert_no_raw_pii` | A guard called before every gold write. Turns a compliance incident into a failed job. |
 | `pii.py::assert_registry_covers` | Catches the *drift × PII* intersection: an originator adds `debtor_mobile` next quarter. |
 | `sql/uc_governance.sql` | Column masks and row filters belong in Unity Catalog, not the pipeline — UC enforces on every read path. |
-| `ingest.py` | Classifies drift into four kinds and handles each differently. `mergeSchema=true` handles exactly one of them correctly. |
+| `ingest.py` | Classifies drift into four kinds and handles each differently. `mergeSchema=true` handles exactly one of them correctly. Reads the landed CSV **as strings, by header** — handing the reader the expected schema makes drift undetectable (the frame then matches the contract by construction) and maps CSV by position, so one inserted column shifts every value. |
+| `ingest.conform()` | `try_cast`, one step later, where a failure is visible. Under ANSI (the serverless default) a plain `cast` of one malformed value fails the whole job; `try_cast` costs you one quarantined row instead. |
 | `dq.py` | Quarantine, not drop. Per-rule severity. NULL-safe conditions. Single-pass metrics. A circuit breaker on the quarantine rate. |
 | `features.py` | Two implementations of the same features — the leaky one and the point-in-time one — so the difference is testable. |
 | `spark_utils.py` | AQE first, salting only for the cases AQE does not cover (skewed aggregations and windows). |
@@ -141,6 +196,12 @@ production failure mode:
 | 0.5% `1970-01-01` | epoch-zero leaking through a bad cast |
 | 0.2% currency `XXX` | unmapped currency silently breaking FX aggregates |
 | payments before `default_date` | late-arriving / backdated corrections |
+| 10% of placements never contacted | SLA is `PENDING`, not `BREACHED` — collapsing the two overstates breaches |
+
+The generator emits **exactly** the columns in `PORTFOLIO_CASE_RAW`, and
+`tests/test_ingest_conform.py::test_generator_emits_exactly_the_contract`
+asserts it. If the two drift apart, every ingest run fails the drift check —
+a correct outcome, and an expensive way to discover you edited one of the two.
 
 ---
 
@@ -164,5 +225,14 @@ production failure mode:
   watermark, and a test for late-arriving data, is the obvious next step.
 - No Delta Live Tables variant.
 - `train.py` is the thinnest possible model — the DE surface is what matters here.
+  It is also **not wired to a job**: serverless ships `mlflow-skinny`, so
+  `mlflow.spark.log_model` would need a declared dependency, and Spark ML on
+  serverless is worth verifying before promising it in a pipeline.
 - No FX conversion, despite multi-currency data. Deliberate: it needs a rate
   dimension with an as-of join, which is the same SCD2 pattern as the commission rate.
+- The `prod` target is aspirational on Free Edition: it needs a service
+  principal and account groups, neither of which exists there. It also still
+  deploys to `/Workspace/Shared`, which `bundle validate -t prod` correctly
+  warns is writable by all workspace users.
+- `ALTER TABLE ... SET MASK` re-runs are unverified on environment version 5 —
+  see the note in `sql/uc_governance.sql`.

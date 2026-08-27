@@ -1,0 +1,28 @@
+# ---------------------------------------------------------------------------
+# smoke_test: runs AFTER deploy against the real catalog. It answers one
+# question -- "is the deployed thing alive and are the contracts intact?"
+# It is not a correctness suite. Keep it under ~5 minutes or people will start
+# skipping it.
+# ---------------------------------------------------------------------------
+resources:
+  jobs:
+    smoke_test:
+      name: "[${bundle.target}] smoke_test"
+
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: ${var.environment_version}
+            dependencies:
+              - ../dist/*.whl
+
+      tasks:
+        - task_key: smoke
+          environment_key: default
+          python_wheel_task:
+            package_name: collections_platform
+            entry_point: run-smoke
+            parameters:
+              - --catalog=${var.catalog}
+              - --gold-schema=${var.gold_schema}
+              - --max-staleness-hours=26

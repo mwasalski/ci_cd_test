@@ -26,9 +26,13 @@ def build_servicing_performance(
     client_contracts: client_id, commission_rate, sla_target_days,
                       valid_from, valid_to   <- SCD2, and that matters below
     """
+    # Only placed cases belong in the Servicing fact. A case we bought outright
+    # has no client, and letting it through would produce a fact row with a NULL
+    # client_id and a NULL commission -- i.e. an Investing case wearing a
+    # Servicing costume, inflating every per-client aggregate that ignores NULLs.
     case_client = cases.select(
         "case_reference", "client_id", "placed_date", "first_contact_date"
-    )
+    ).filter(F.col("client_id").isNotNull())
 
     monthly = (
         payments.join(F.broadcast(case_client), on="case_reference", how="inner")

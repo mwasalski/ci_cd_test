@@ -1,0 +1,31 @@
+# ---------------------------------------------------------------------------
+# seed_synthetic: generates the pathological dataset into the landing volume,
+# and the reference tables (portfolios, forecast curve, SCD2 client contracts)
+# straight into silver. Run once on dev, after bootstrap.
+# ---------------------------------------------------------------------------
+resources:
+  jobs:
+    seed_synthetic:
+      name: "[${bundle.target}] seed_synthetic"
+
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: ${var.environment_version}
+            dependencies:
+              - ../dist/*.whl
+
+      tasks:
+        - task_key: seed
+          environment_key: default
+          python_wheel_task:
+            package_name: collections_platform
+            entry_point: seed-synthetic
+            parameters:
+              - --landing-path=${var.landing_path}
+              - --catalog=${var.catalog}
+              - --ref-schema=${var.silver_schema}
+              # 50k, not 200k: Free Edition has per-account serverless quotas,
+              # and the point of this data is its shape, not its size.
+              - --n-cases=50000
+              - --skew-factor=0.4 # 40% of cases land on one portfolio

@@ -106,11 +106,14 @@ def verify(spark: SparkSession, plan: BootstrapPlan) -> None:
     pointed at the wrong catalog is a real and annoying failure mode. Check,
     do not assume.
     """
+    # The catalog's OWN information_schema, not `system.information_schema`:
+    # every UC catalog exposes it to anyone who can use the catalog, whereas the
+    # system catalog needs a separate grant (and is not enabled on every
+    # workspace -- Free Edition included).
     found = {
         r["schema_name"]
         for r in spark.sql(
-            "SELECT schema_name FROM system.information_schema.schemata "
-            f"WHERE catalog_name = '{plan.catalog}'"
+            f"SELECT schema_name FROM {plan.catalog}.information_schema.schemata"
         ).collect()
     }
     missing = sorted(set(plan.schemas) - found)
@@ -120,8 +123,7 @@ def verify(spark: SparkSession, plan: BootstrapPlan) -> None:
     volumes = {
         r["volume_name"]
         for r in spark.sql(
-            "SELECT volume_name FROM system.information_schema.volumes "
-            f"WHERE volume_catalog = '{plan.catalog}'"
+            f"SELECT volume_name FROM {plan.catalog}.information_schema.volumes"
         ).collect()
     }
     if plan.landing_volume not in volumes:

@@ -6,6 +6,7 @@ importable modules so tests never have to invoke an entry point.
 
 from __future__ import annotations
 
+import base64
 import sys
 from datetime import date, datetime, timezone
 
@@ -23,15 +24,29 @@ def _get_pepper(scope: str, key: str = "pii_pepper") -> str:
 
     Never a literal, never an env var baked into the wheel, never a job parameter
     (job parameters are visible in the run UI and in the API response).
+
+    Two lookups because there are two runtimes: `databricks.sdk.runtime` is the
+    in-job one, and the WorkspaceClient path covers a serverless job where the
+    runtime shim is not injected. Both end at the same secret.
     """
     try:
-        from databricks.sdk.runtime import dbutils  # available on the cluster
+        from databricks.sdk.runtime import dbutils
 
         return dbutils.secrets.get(scope=scope, key=key)
+    except Exception:  # pragma: no cover - depends on runtime
+        pass
+
+    try:
+        from databricks.sdk import WorkspaceClient
+
+        secret = WorkspaceClient().secrets.get_secret(scope=scope, key=key)
+        return base64.b64decode(secret.value).decode()
     except Exception as exc:  # pragma: no cover - local dev path
         raise RuntimeError(
-            f"Could not read secret {scope}/{key}. On Databricks: "
-            f"`databricks secrets create-scope {scope}` then put the pepper in it."
+            f"Could not read secret {scope}/{key}. Create it once with:\n"
+            f"  databricks secrets create-scope {scope}\n"
+            f"  databricks secrets put-secret {scope} {key}\n"
+            f"(Free Edition supports workspace secret scopes; this is a one-time step.)"
         ) from exc
 
 
@@ -74,9 +89,15 @@ def apply_governance(argv: list[str] | None = None) -> None:
 
     p = argparse.ArgumentParser()
     p.add_argument("--catalog", required=True)
-    p.add_argument("--bronze-schema", default="bronze")
+    p.add_argument("--silver-schema", default="silver")
     p.add_argument("--gold-schema", default="gold")
     p.add_argument("--ops-schema", default="ops")
+    # Principals are parameters, not literals in the SQL: Free Edition has no
+    # account groups, so dev grants to the deploying user while prod names a
+    # group. Same file, same statements, one variable.
+    p.add_argument("--analyst-principal", default="data-analysts")
+    p.add_argument("--ops-group", default="collections-ops")
+    p.add_argument("--engineer-group", default="data-engineers")
     p.add_argument("--sql-path", required=True, help="Workspace path to uc_governance.sql")
     ns, _ = p.parse_known_args(argv)
 
@@ -87,33 +108,55 @@ def apply_governance(argv: list[str] | None = None) -> None:
             ns.sql_path,
             {
                 "catalog": ns.catalog,
-                "bronze_schema": ns.bronze_schema,
+                "silver_schema": ns.silver_schema,
                 "gold_schema": ns.gold_schema,
                 "ops_schema": ns.ops_schema,
+                "analyst_principal": ns.analyst_principal,
+                "ops_group": ns.ops_group,
+                "engineer_group": ns.engineer_group,
             },
         )
 
 
 def ingest_portfolio(argv: list[str] | None = None) -> None:
-    from .dq import apply_rules, assert_error_rate_below, case_rules, dedupe
-    from .ingest import detect_drift, enforce_drift_policy, read_landing
-    from .pii import apply_pii_policy, assert_registry_covers
-    from .schemas import PORTFOLIO_CASE_RAW
+    """Landing volume -> conformed cases + quarantine.
+
+    `--landing-path` must point at the *cases* directory, not at the volume
+    root: one reader, one contract, one file layout. Pointing it at the root
+    would also pick up the payments files, whose header does not match this
+    contract -- which the drift check would (correctly, but confusingly) fail on.
+    """
     from pyspark.sql import functions as F
+
+    from .dq import apply_rules, assert_error_rate_below, case_rules, dedupe
+    from .ingest import (
+        add_audit_columns,
+        conform,
+        detect_drift,
+        enforce_drift_policy,
+        read_landing,
+    )
+    from .pii import apply_pii_policy, assert_registry_covers
+    from .schemas import CASE_CASTS, PORTFOLIO_CASE_RAW
 
     cfg = parse_args(argv)
     spark = get_spark()
     batch = _batch_id()
 
-    with timed("ingest", batch_id=batch):
-        raw = read_landing(spark, cfg.landing_path, PORTFOLIO_CASE_RAW, batch)
+    with timed("ingest_cases", batch_id=batch, path=cfg.landing_path):
+        raw = read_landing(spark, cfg.landing_path)
 
-        # Drift check before anything else touches the data.
+        # Drift check before anything else touches the data, and before the
+        # audit columns exist -- ours are not the originator's drift.
         report = detect_drift(raw.schema, PORTFOLIO_CASE_RAW)
         enforce_drift_policy(report)
-        assert_registry_covers(raw.columns, known_safe={"case_reference", "portfolio_id"})
+        assert_registry_covers(
+            raw.columns,
+            known_safe={"case_reference", "portfolio_id", "client_id"},
+        )
 
-        deduped = dedupe(raw, keys=["case_reference"], order_by=F.col("_ingested_at"))
+        typed = add_audit_columns(conform(raw, CASE_CASTS), batch_id=batch)
+        deduped = dedupe(typed, keys=["case_reference"], order_by=F.col("_ingested_at"))
         result = apply_rules(deduped, case_rules())
         assert_error_rate_below(result.metrics, threshold=0.10)
 
@@ -134,13 +177,55 @@ def ingest_portfolio(argv: list[str] | None = None) -> None:
         )
 
 
+def ingest_payments(argv: list[str] | None = None) -> None:
+    """Same shape as the case ingest: contract, drift, cast, DQ, quarantine.
+
+    Payments carry no PII of their own, so there is no pepper here -- but the
+    quarantine and the drift policy are identical. A payments feed that silently
+    loses rows is exactly as damaging as a case feed that does.
+    """
+    from pyspark.sql import functions as F
+
+    from .dq import apply_rules, assert_error_rate_below, dedupe, payment_rules
+    from .ingest import (
+        add_audit_columns,
+        conform,
+        detect_drift,
+        enforce_drift_policy,
+        read_landing,
+    )
+    from .schemas import PAYMENT_CASTS, PAYMENT_RAW
+
+    cfg = parse_args(argv)
+    spark = get_spark()
+    batch = _batch_id()
+
+    with timed("ingest_payments", batch_id=batch, path=cfg.landing_path):
+        raw = read_landing(spark, cfg.landing_path)
+        enforce_drift_policy(detect_drift(raw.schema, PAYMENT_RAW))
+
+        typed = add_audit_columns(conform(raw, PAYMENT_CASTS), batch_id=batch)
+        deduped = dedupe(typed, keys=["payment_id"], order_by=F.col("_ingested_at"))
+        result = apply_rules(deduped, payment_rules())
+        assert_error_rate_below(result.metrics, threshold=0.10)
+
+        write_delta(result.clean, str(cfg.table(cfg.schema, "payments")), mode="overwrite")
+        write_delta(
+            result.quarantined,
+            str(cfg.table(cfg.ops_schema, "payments_quarantine")),
+            mode="append",
+        )
+
+
 def build_investing(argv: list[str] | None = None) -> None:
+    from .ingest import add_audit_columns
     from .pii import assert_no_raw_pii
     from .transform_investing import build_investing_performance
 
     cfg = parse_args(argv)
     spark = get_spark()
-    with timed("build_investing"):
+    batch = _batch_id()
+    with timed("build_investing", batch_id=batch):
         out = build_investing_performance(
             payments=spark.table(str(cfg.table(cfg.source_schema, "payments"))),
             cases=spark.table(str(cfg.table(cfg.source_schema, "cases"))),
@@ -149,16 +234,21 @@ def build_investing(argv: list[str] | None = None) -> None:
         )
         target = str(cfg.table(cfg.target_schema, "fct_investing_performance"))
         assert_no_raw_pii(out, target)
-        write_delta(out, target)
+        # A gold table with no `_ingested_at` cannot be freshness-checked, and
+        # the smoke job's staleness test is the thing that catches a pipeline
+        # that "succeeded" without writing anything new.
+        write_delta(add_audit_columns(out, batch_id=batch, source_file=False), target)
 
 
 def build_servicing(argv: list[str] | None = None) -> None:
+    from .ingest import add_audit_columns
     from .pii import assert_no_raw_pii
     from .transform_servicing import build_servicing_performance
 
     cfg = parse_args(argv)
     spark = get_spark()
-    with timed("build_servicing"):
+    batch = _batch_id()
+    with timed("build_servicing", batch_id=batch):
         out = build_servicing_performance(
             payments=spark.table(str(cfg.table(cfg.source_schema, "payments"))),
             cases=spark.table(str(cfg.table(cfg.source_schema, "cases"))),
@@ -166,23 +256,28 @@ def build_servicing(argv: list[str] | None = None) -> None:
         )
         target = str(cfg.table(cfg.target_schema, "fct_servicing_performance"))
         assert_no_raw_pii(out, target)
-        write_delta(out, target)
+        write_delta(add_audit_columns(out, batch_id=batch, source_file=False), target)
 
 
 def build_features(argv: list[str] | None = None) -> None:
     from .features import build_training_set
+    from .ingest import add_audit_columns
 
     cfg = parse_args(argv)
     if cfg.as_of_date is None:
         raise SystemExit("--as-of-date is required: features must be reproducible.")
     spark = get_spark()
-    with timed("build_features", as_of=cfg.as_of_date.isoformat()):
+    batch = _batch_id()
+    with timed("build_features", as_of=cfg.as_of_date.isoformat(), batch_id=batch):
         out = build_training_set(
             payments=spark.table(str(cfg.table(cfg.source_schema, "payments"))),
             cases=spark.table(str(cfg.table(cfg.source_schema, "cases"))),
             as_of=cfg.as_of_date,
         )
-        write_delta(out, str(cfg.table(cfg.target_schema, "propensity_training_set")))
+        write_delta(
+            add_audit_columns(out, batch_id=batch, source_file=False),
+            str(cfg.table(cfg.target_schema, "propensity_training_set")),
+        )
 
 
 def train_propensity(argv: list[str] | None = None) -> None:
@@ -201,28 +296,69 @@ def train_propensity(argv: list[str] | None = None) -> None:
 
 
 def seed_synthetic(argv: list[str] | None = None) -> None:
+    """Write the pathological originator feed into the landing volume, and the
+    reference data into the tables `bootstrap` declared.
+
+    Reference data is written as TABLES, not as files: it is contract data we
+    own, not an originator feed. Routing it through the landing volume would
+    imply a drift policy and a quarantine it does not need.
+    """
     import argparse
 
-    from .synthetic import generate_cases, generate_payments
+    from .synthetic import (
+        generate_cases,
+        generate_client_contracts,
+        generate_forecast_curve,
+        generate_payments,
+        generate_portfolios,
+    )
 
     p = argparse.ArgumentParser()
     p.add_argument("--landing-path", required=True)
+    p.add_argument("--catalog", required=True)
+    p.add_argument("--ref-schema", default="silver", help="Where the reference tables live")
     p.add_argument("--n-cases", type=int, default=100_000)
+    p.add_argument("--n-portfolios", type=int, default=20)
     p.add_argument("--skew-factor", type=float, default=0.4)
     ns, _ = p.parse_known_args(argv)
 
     spark = get_spark()
-    cases = generate_cases(spark, n_cases=ns.n_cases, skew_factor=ns.skew_factor)
-    payments = generate_payments(spark, cases)
-    cases.write.mode("overwrite").option("header", "true").csv(f"{ns.landing_path}/cases")
-    payments.write.mode("overwrite").option("header", "true").csv(f"{ns.landing_path}/payments")
-    log_event("seed.done", n_cases=ns.n_cases, path=ns.landing_path)
+    with timed("seed", n_cases=ns.n_cases, path=ns.landing_path):
+        cases = generate_cases(
+            spark,
+            n_cases=ns.n_cases,
+            n_portfolios=ns.n_portfolios,
+            skew_factor=ns.skew_factor,
+        ).cache()
+        payments = generate_payments(spark, cases)
+
+        # A single CSV part per feed: the landing volume is standing in for an
+        # SFTP drop, and 200 part-files is not what an originator sends.
+        cases.coalesce(1).write.mode("overwrite").option("header", "true").csv(
+            f"{ns.landing_path}/cases"
+        )
+        payments.coalesce(1).write.mode("overwrite").option("header", "true").csv(
+            f"{ns.landing_path}/payments"
+        )
+
+        ref = f"{ns.catalog}.{ns.ref_schema}"
+        write_delta(generate_portfolios(spark, ns.n_portfolios), f"{ref}.portfolios")
+        write_delta(generate_forecast_curve(spark, ns.n_portfolios), f"{ref}.forecast_curve")
+        write_delta(generate_client_contracts(spark), f"{ref}.client_contracts")
+        cases.unpersist()
+
+    log_event("seed.done", n_cases=ns.n_cases, path=ns.landing_path, reference_schema=ref)
 
 
 def run_tests(argv: list[str] | None = None) -> None:
     """Run pytest from inside a Databricks job so the suite executes against the
-    real DBR (same Spark build, same Java, same Delta version) rather than a
-    local pyspark that only approximates it."""
+    real runtime (same Spark build, same Python, same Delta version) rather than
+    a local pyspark that only approximates it.
+
+    `-p no:cacheprovider`: the tests live under /Workspace, and pytest's
+    `.pytest_cache` write there either fails or leaves droppings in the deployed
+    bundle. The cache buys nothing in a one-shot job.
+    """
     import argparse
 
     import pytest
@@ -232,7 +368,9 @@ def run_tests(argv: list[str] | None = None) -> None:
     p.add_argument("--markers", default="not smoke")
     ns, _ = p.parse_known_args(argv)
 
-    exit_code = pytest.main([ns.path, "-m", ns.markers, "-v", "--tb=short"])
+    exit_code = pytest.main(
+        [ns.path, "-m", ns.markers, "-v", "--tb=short", "-p", "no:cacheprovider"]
+    )
     if exit_code != 0:
         raise SystemExit(f"pytest failed with exit code {exit_code}")
 

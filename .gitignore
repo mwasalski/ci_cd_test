@@ -1,0 +1,21 @@
+# Build output. The CLI rebuilds the wheel on every `bundle deploy`
+# (see `artifacts:` in databricks.yml), so a committed dist/ is only ever stale.
+dist/
+build/
+*.egg-info/
+
+# Bundle + tooling state
+.databricks/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+__pycache__/
+*.py[cod]
+
+# Local envs
+.venv/
+venv/
+.env
+
+# macOS
+.DS_Store

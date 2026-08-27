@@ -1,5 +1,11 @@
 # Databricks Asset Bundle root.
 #
+# Target: Databricks Free Edition, which is SERVERLESS-ONLY. There is no
+# `new_cluster` anywhere in this bundle and there cannot be one -- Free Edition
+# grants no cluster-creation capability, so a job that asks for a node type or a
+# spark_version fails at deploy time, not at run time. Every task runs on a
+# serverless environment (environment version 5).
+#
 # Deploy:   databricks bundle deploy -t dev
 # Run:      databricks bundle run unit_tests -t dev
 #           databricks bundle run collections_pipeline -t dev
@@ -29,8 +35,13 @@ variables:
     description: Unity Catalog catalog for this target.
     default: dev_collections
   bronze_schema:
+    description: >-
+      Home of the landing volume. The raw files in that volume ARE the bronze
+      layer -- there is no bronze *table*, because a copy of a CSV in Delta with
+      no types and no DQ applied buys nothing but storage.
     default: bronze
   silver_schema:
+    description: Conformed, typed, deduplicated, DQ-checked. Reference data too.
     default: silver
   gold_schema:
     default: gold
@@ -43,31 +54,60 @@ variables:
   pii_secret_scope:
     description: Secret scope holding the pseudonymisation pepper.
     default: collections
-  node_type:
-    description: Azure worker type. Small on dev, real on prod.
-    default: Standard_DS3_v2
-  spark_version:
-    default: "15.4.x-scala2.12"   # DBR 15.4 LTS -> Spark 3.5
+
+  # -------------------------------------------------------------------------
+  # Serverless
+  # -------------------------------------------------------------------------
+  environment_version:
+    description: >-
+      Serverless environment version. 5 = Databricks Connect 18 / Spark 4 /
+      Python 3.12, and it is what pyproject.toml's [tool.databricks.environment]
+      pins for the local loop. Change it in both places or in neither -- the
+      point of running the tests on serverless is that they run on the same
+      thing the jobs do.
+    default: "5"
+
+  # -------------------------------------------------------------------------
+  # Governance principals (sql/uc_governance.sql)
+  #
+  # Free Edition has no account groups, so dev grants to the deploying user.
+  # `is_account_group_member('<group that does not exist>')` returns false, so
+  # the masks stay ON there -- which is the safe direction to fail.
+  # -------------------------------------------------------------------------
+  analyst_principal:
+    description: Principal that gets SELECT on gold, and nothing else.
+    default: data-analysts
+  ops_group:
+    description: Group allowed to see unmasked phone numbers.
+    default: collections-ops
+  engineer_group:
+    description: Group allowed to see pseudonym join keys.
+    default: data-engineers
 
 targets:
   dev:
-    mode: development          # prefixes resources with [dev <user>], pauses schedules
+    mode: development # prefixes resources with [dev <user>], pauses schedules
     default: true
     workspace:
-      host: https://adb-0000000000000000.0.azuredatabricks.net
+      host: https://dbc-2b69cffc-7563.cloud.databricks.com/
     variables:
       catalog: dev_collections
       landing_path: /Volumes/dev_collections/bronze/landing
+      # On Free Edition you are the only principal there is.
+      analyst_principal: ${workspace.current_user.userName}
 
   prod:
-    mode: production           # blocks deploy if the git tree is dirty
+    # Kept deliberately: "dev and prod differ only by variable values" is the
+    # claim a DAB exists to make. Note what this target needs that Free Edition
+    # does not have -- a service principal and account groups. On Free Edition,
+    # deploy `dev` only.
+    mode: production # blocks deploy if the git tree is dirty
     workspace:
-      host: https://adb-0000000000000000.0.azuredatabricks.net
+      host: https://dbc-2b69cffc-7563.cloud.databricks.com/
       root_path: /Shared/.bundle/prod/${bundle.name}
     variables:
       catalog: prod_collections
       landing_path: /Volumes/prod_collections/bronze/landing
-      node_type: Standard_D8ds_v5
     run_as:
       # Never run prod as a human. A service principal survives people leaving.
       service_principal_name: sp-collections-platform
