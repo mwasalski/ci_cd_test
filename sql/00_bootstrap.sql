@@ -33,6 +33,11 @@ CREATE CATALOG IF NOT EXISTS dev_collections
 
 -- MANAGED LOCATION 'abfss://uc-data@<storageaccount>.dfs.core.windows.net/dev_collections'
 
+CREATE CATALOG IF NOT EXISTS prod_collections
+  COMMENT 'Debt collection platform - prod. Contains pseudonymised personal data.';
+
+-- MANAGED LOCATION 'abfss://uc-data@<storageaccount>.dfs.core.windows.net/prod_collections'
+
 USE CATALOG dev_collections;
 
 -- ---------------------------------------------------------------------------

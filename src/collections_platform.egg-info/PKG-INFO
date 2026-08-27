@@ -1,0 +1,14 @@
+Metadata-Version: 2.4
+Name: collections_platform
+Version: 0.1.0
+Summary: Debt-collection data platform: Investing + Servicing fact domains on Databricks
+Requires-Python: >=3.11
+Requires-Dist: pydantic>=2.7
+Provides-Extra: dev
+Requires-Dist: pyspark==3.5.0; extra == "dev"
+Requires-Dist: delta-spark==3.2.0; extra == "dev"
+Requires-Dist: pytest>=8.0; extra == "dev"
+Requires-Dist: pytest-cov>=5.0; extra == "dev"
+Requires-Dist: chispa>=0.10; extra == "dev"
+Requires-Dist: ruff>=0.5; extra == "dev"
+Requires-Dist: mypy>=1.10; extra == "dev"

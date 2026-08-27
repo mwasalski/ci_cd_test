@@ -1,0 +1,11 @@
+[console_scripts]
+apply-governance = collections_platform.entrypoints:apply_governance
+bootstrap-catalog = collections_platform.entrypoints:bootstrap_catalog
+build-features = collections_platform.entrypoints:build_features
+build-investing = collections_platform.entrypoints:build_investing
+build-servicing = collections_platform.entrypoints:build_servicing
+ingest-portfolio = collections_platform.entrypoints:ingest_portfolio
+run-smoke = collections_platform.entrypoints:run_smoke
+run-tests = collections_platform.entrypoints:run_tests
+seed-synthetic = collections_platform.entrypoints:seed_synthetic
+train-propensity = collections_platform.entrypoints:train_propensity

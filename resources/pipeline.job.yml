@@ -3,27 +3,10 @@ resources:
     collections_pipeline:
       name: "[${bundle.target}] collections_pipeline"
 
-      # One job cluster shared by all tasks. Spinning up a cluster per task is
-      # the single most common cost mistake in a DAB.
-      job_clusters:
-        - job_cluster_key: main
-          new_cluster:
-            spark_version: ${var.spark_version}
-            node_type_id: ${var.node_type}
-            num_workers: 2
-            data_security_mode: SINGLE_USER   # required for UC + python wheel tasks
-            spark_conf:
-              # AQE is on by default in DBR, but being explicit documents intent
-              # and protects you if someone flips a workspace-level default.
-              spark.sql.adaptive.enabled: "true"
-              spark.sql.adaptive.skewJoin.enabled: "true"
-              spark.sql.shuffle.partitions: "auto"
-            azure_attributes:
-              availability: SPOT_WITH_FALLBACK_AZURE   # dev only; prod should be ON_DEMAND
+      # Serverless compute (auto-selected)
 
       tasks:
         - task_key: ingest_portfolio
-          job_cluster_key: main
           python_wheel_task:
             package_name: collections_platform
             entry_point: ingest-portfolio
@@ -32,12 +15,9 @@ resources:
               - --schema=${var.bronze_schema}
               - --landing-path=${var.landing_path}
               - --pii-scope=${var.pii_secret_scope}
-          libraries:
-            - whl: ../dist/*.whl
 
         - task_key: build_investing
           depends_on: [{ task_key: ingest_portfolio }]
-          job_cluster_key: main
           python_wheel_task:
             package_name: collections_platform
             entry_point: build-investing
@@ -45,15 +25,12 @@ resources:
               - --catalog=${var.catalog}
               - --source-schema=${var.silver_schema}
               - --target-schema=${var.gold_schema}
-          libraries:
-            - whl: ../dist/*.whl
 
         - task_key: build_servicing
           # Deliberately NOT depending on build_investing: two independent fact
           # domains, so they run in parallel. If someone later chains them,
           # that's a modelling smell worth catching in review.
           depends_on: [{ task_key: ingest_portfolio }]
-          job_cluster_key: main
           python_wheel_task:
             package_name: collections_platform
             entry_point: build-servicing
@@ -61,14 +38,11 @@ resources:
               - --catalog=${var.catalog}
               - --source-schema=${var.silver_schema}
               - --target-schema=${var.gold_schema}
-          libraries:
-            - whl: ../dist/*.whl
 
         - task_key: build_features
           depends_on:
             - { task_key: build_investing }
             - { task_key: build_servicing }
-          job_cluster_key: main
           python_wheel_task:
             package_name: collections_platform
             entry_point: build-features
@@ -79,8 +53,6 @@ resources:
               # as-of date is a parameter, never "today()" inside the code:
               # that is what makes a backfill reproducible.
               - --as-of-date={{job.parameters.as_of_date}}
-          libraries:
-            - whl: ../dist/*.whl
 
       parameters:
         - name: as_of_date
@@ -88,7 +60,7 @@ resources:
 
       email_notifications:
         on_failure:
-          - m.wasalski@gmail.com
+          - moustache.data@gmail.com
 
       queue:
         enabled: true    # avoids concurrent-run failures when a backfill overlaps a schedule
