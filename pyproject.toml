@@ -30,6 +30,7 @@ dev = [
 [project.scripts]
 # These become the entry_point values used by python_wheel_task in the DAB.
 bootstrap-catalog = "collections_platform.entrypoints:bootstrap_catalog"
+apply-governance = "collections_platform.entrypoints:apply_governance"
 ingest-portfolio = "collections_platform.entrypoints:ingest_portfolio"
 build-investing = "collections_platform.entrypoints:build_investing"
 build-servicing = "collections_platform.entrypoints:build_servicing"

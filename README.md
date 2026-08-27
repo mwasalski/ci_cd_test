@@ -30,9 +30,10 @@ databricks secrets put-secret collections pii_pepper
 #    so the build backend just has to be importable
 pip install build
 
-# 4. create the catalog ONCE (you are the metastore admin on your own workspace;
-#    at a real employer this half is Terraform's job, not the pipeline repo's)
-databricks sql -f sql/00_bootstrap.sql --warehouse-id <id>
+# 4. create the catalog ONCE. Paste sql/00_bootstrap.sql into a SQL editor tab,
+#    or run it via the Statement Execution API. It has no placeholders -- edit
+#    the catalog name at the top if you want something other than dev_collections.
+#    (At a real employer this half is Terraform's job, not the pipeline repo's.)
 
 # 5. validate, deploy, run
 databricks bundle validate -t dev
@@ -41,11 +42,35 @@ databricks bundle run bootstrap          -t dev   # schemas, volume, reference t
 databricks bundle run seed_synthetic     -t dev   # pathological data into the volume
 databricks bundle run unit_tests         -t dev
 databricks bundle run collections_pipeline -t dev
+databricks bundle run apply_governance   -t dev   # masks, row filters, grants
 databricks bundle run smoke_test         -t dev
-
-# 6. masks, row filters, grants (after the tables exist)
-databricks sql -f sql/uc_governance.sql --warehouse-id <id>
 ```
+
+### `${catalog}` in a .sql file
+
+Bundle variable interpolation (`${var.catalog}`, `${workspace.file_path}`) is
+resolved by the CLI **when it reads the bundle YAML**. It never reaches a file the
+YAML merely points at. A `.sql` file full of `${catalog}` pasted into a SQL editor
+is just a syntax error.
+
+`sql/uc_governance.sql` is therefore a template rendered by
+`collections_platform.sql_runner` — Python substitutes `${catalog}`,
+`${bronze_schema}`, `${gold_schema}`, `${ops_schema}` and executes the file
+statement by statement. An unknown placeholder raises instead of emitting broken
+SQL, so a typo'd `${catalogue}` fails immediately rather than 40 statements later.
+
+Two alternatives, and why they lost:
+
+- **`USE CATALOG <name>;` + two-level names.** Simplest, and right for a file you
+  run by hand. Loses because "one line to change per environment" is a line
+  someone forgets, and CI can't catch it.
+- **`IDENTIFIER(:catalog)` with parameter markers.** Genuinely supported for
+  object names in Databricks SQL — but I'm not certain it works in every DDL
+  position, and `ALTER TABLE ... SET MASK` is exactly where I'd want to verify
+  before depending on it. Test it before you build on it.
+
+`sql/00_bootstrap.sql` deliberately has **no** placeholders: it runs before the
+bundle exists, so it has to be paste-able as-is.
 
 ### Who creates what, and why the split matters
 

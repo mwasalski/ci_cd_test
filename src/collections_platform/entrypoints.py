@@ -61,6 +61,39 @@ def bootstrap_catalog(argv: list[str] | None = None) -> None:
         verify(spark, plan)   # never trust CREATE IF NOT EXISTS without checking
 
 
+def apply_governance(argv: list[str] | None = None) -> None:
+    """Render sql/uc_governance.sql for this target and execute it.
+
+    `${catalog}` in the SQL file is substituted HERE, not by the Databricks CLI.
+    Bundle variable interpolation only applies to the bundle YAML -- it never
+    reaches a file the YAML merely points at. See sql_runner.py.
+    """
+    import argparse
+
+    from .sql_runner import execute_file
+
+    p = argparse.ArgumentParser()
+    p.add_argument("--catalog", required=True)
+    p.add_argument("--bronze-schema", default="bronze")
+    p.add_argument("--gold-schema", default="gold")
+    p.add_argument("--ops-schema", default="ops")
+    p.add_argument("--sql-path", required=True, help="Workspace path to uc_governance.sql")
+    ns, _ = p.parse_known_args(argv)
+
+    spark = get_spark()
+    with timed("apply_governance", catalog=ns.catalog):
+        execute_file(
+            spark,
+            ns.sql_path,
+            {
+                "catalog": ns.catalog,
+                "bronze_schema": ns.bronze_schema,
+                "gold_schema": ns.gold_schema,
+                "ops_schema": ns.ops_schema,
+            },
+        )
+
+
 def ingest_portfolio(argv: list[str] | None = None) -> None:
     from .dq import apply_rules, assert_error_rate_below, case_rules, dedupe
     from .ingest import detect_drift, enforce_drift_policy, read_landing

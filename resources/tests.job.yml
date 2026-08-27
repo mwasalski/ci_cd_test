@@ -34,6 +34,40 @@ resources:
             - whl: ../dist/*.whl
 
     # ---------------------------------------------------------------------
+    # apply_governance: masks, row filters, grants.
+    # Run AFTER the pipeline, because ALTER TABLE ... SET MASK needs the table
+    # to exist. ${catalog} inside the .sql file is substituted by the runner
+    # (sql_runner.py), NOT by the CLI -- bundle interpolation does not reach
+    # files the YAML merely points at.
+    # ---------------------------------------------------------------------
+    apply_governance:
+      name: "[${bundle.target}] apply_governance"
+      tasks:
+        - task_key: governance
+          new_cluster:
+            spark_version: ${var.spark_version}
+            node_type_id: ${var.node_type}
+            num_workers: 0
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.master: "local[*, 4]"
+              spark.databricks.cluster.profile: singleNode
+            custom_tags:
+              ResourceClass: SingleNode
+          python_wheel_task:
+            package_name: collections_platform
+            entry_point: apply-governance
+            parameters:
+              - --catalog=${var.catalog}
+              - --bronze-schema=${var.bronze_schema}
+              - --gold-schema=${var.gold_schema}
+              - --ops-schema=${var.ops_schema}
+              # ${workspace.file_path} IS interpolated -- this is bundle YAML.
+              - --sql-path=/Workspace${workspace.file_path}/sql/uc_governance.sql
+          libraries:
+            - whl: ../dist/*.whl
+
+    # ---------------------------------------------------------------------
     # unit_tests: no catalog access, no real data. Runs the pytest suite on a
     # single-node cluster. This is the job your CI calls on every PR.
     # ---------------------------------------------------------------------
