@@ -92,12 +92,10 @@ def apply_governance(argv: list[str] | None = None) -> None:
     p.add_argument("--silver-schema", default="silver")
     p.add_argument("--gold-schema", default="gold")
     p.add_argument("--ops-schema", default="ops")
-    # Principals are parameters, not literals in the SQL: Free Edition has no
-    # account groups, so dev grants to the deploying user while prod names a
-    # group. Same file, same statements, one variable.
-    p.add_argument("--analyst-principal", default="data-analysts")
-    p.add_argument("--ops-group", default="collections-ops")
-    p.add_argument("--engineer-group", default="data-engineers")
+    # The principal is a parameter, not a literal in the SQL. This workspace has
+    # exactly one (no account groups, no service principals), and the mask
+    # predicates compare against it -- see the header of uc_governance.sql.
+    p.add_argument("--platform-user", required=True)
     p.add_argument("--sql-path", required=True, help="Workspace path to uc_governance.sql")
     ns, _ = p.parse_known_args(argv)
 
@@ -111,9 +109,7 @@ def apply_governance(argv: list[str] | None = None) -> None:
                 "silver_schema": ns.silver_schema,
                 "gold_schema": ns.gold_schema,
                 "ops_schema": ns.ops_schema,
-                "analyst_principal": ns.analyst_principal,
-                "ops_group": ns.ops_group,
-                "engineer_group": ns.engineer_group,
+                "platform_user": ns.platform_user,
             },
         )
 

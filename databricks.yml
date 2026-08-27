@@ -68,21 +68,21 @@ variables:
     default: "5"
 
   # -------------------------------------------------------------------------
-  # Governance principals (sql/uc_governance.sql)
+  # The one principal
   #
-  # Free Edition has no account groups, so dev grants to the deploying user.
-  # `is_account_group_member('<group that does not exist>')` returns false, so
-  # the masks stay ON there -- which is the safe direction to fail.
+  # Free Edition has no account console: no account groups, no service
+  # principals, one human per account. So everywhere a real workspace would name
+  # a group (`data-analysts`) or an SP (`sp-collections-platform`) -- run_as, job
+  # permissions, grants, the mask predicates in sql/uc_governance.sql -- this
+  # bundle names one user instead.
+  #
+  # The consequence worth stating out loud: on a single-principal workspace the
+  # masks and the row filter are no-ops FOR THAT USER. The mechanism is real and
+  # attached to the columns; there is simply nobody else to hide the data from.
   # -------------------------------------------------------------------------
-  analyst_principal:
-    description: Principal that gets SELECT on gold, and nothing else.
-    default: data-analysts
-  ops_group:
-    description: Group allowed to see unmasked phone numbers.
-    default: collections-ops
-  engineer_group:
-    description: Group allowed to see pseudonym join keys.
-    default: data-engineers
+  platform_user:
+    description: Owns, deploys, runs and reads everything on this workspace.
+    default: moustache.data@gmail.com
 
 targets:
   dev:
@@ -90,27 +90,40 @@ targets:
     default: true
     workspace:
       host: https://dbc-2b69cffc-7563.cloud.databricks.com/
+    run_as:
+      # Every job runs as this user. In `mode: development` the CLI only accepts
+      # the deploying user here anyway, which is the point: it makes "who ran
+      # this" explicit in the file instead of implicit in whoever last typed
+      # `bundle deploy`.
+      user_name: ${var.platform_user}
+    permissions:
+      - level: CAN_MANAGE
+        user_name: ${var.platform_user}
     variables:
       catalog: dev_collections
       landing_path: /Volumes/dev_collections/bronze/landing
-      # On Free Edition you are the only principal there is.
-      analyst_principal: ${workspace.current_user.userName}
 
   prod:
     # Kept deliberately: "dev and prod differ only by variable values" is the
-    # claim a DAB exists to make. Note what this target needs that Free Edition
-    # does not have -- a service principal and account groups. On Free Edition,
-    # deploy `dev` only.
+    # claim a DAB exists to make. Here that is literally true -- the catalog and
+    # the landing path, nothing else.
+    #
+    # What a paid workspace would change, and this one cannot: run_as would be a
+    # service principal (it survives people leaving), permissions would name
+    # groups, and the mask predicates would ask about group membership rather
+    # than about one username.
     mode: production # blocks deploy if the git tree is dirty
     workspace:
       host: https://dbc-2b69cffc-7563.cloud.databricks.com/
-      root_path: /Shared/.bundle/prod/${bundle.name}
+      # Under the user's own home, not /Workspace/Shared: on this workspace
+      # /Shared is writable by every user, which `bundle validate` rightly
+      # complains about for a production target.
+      root_path: /Workspace/Users/${var.platform_user}/.bundle/prod/${bundle.name}
+    run_as:
+      user_name: ${var.platform_user}
+    permissions:
+      - level: CAN_MANAGE
+        user_name: ${var.platform_user}
     variables:
       catalog: prod_collections
       landing_path: /Volumes/prod_collections/bronze/landing
-    run_as:
-      # Never run prod as a human. A service principal survives people leaving.
-      service_principal_name: sp-collections-platform
-    permissions:
-      - level: CAN_VIEW
-        group_name: data-engineers

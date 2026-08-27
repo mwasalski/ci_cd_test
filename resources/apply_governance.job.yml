@@ -28,11 +28,10 @@ resources:
               - --silver-schema=${var.silver_schema}
               - --gold-schema=${var.gold_schema}
               - --ops-schema=${var.ops_schema}
-              # Principals: a group on a real workspace, the deploying user on
-              # Free Edition, which has no account groups.
-              - --analyst-principal=${var.analyst_principal}
-              - --ops-group=${var.ops_group}
-              - --engineer-group=${var.engineer_group}
+              # The one principal the mask predicates compare against. A real
+              # workspace asks about group membership instead -- see the header
+              # of sql/uc_governance.sql.
+              - --platform-user=${var.platform_user}
               # ${workspace.file_path} IS interpolated -- this is bundle YAML --
               # and it already starts with /Workspace.
               - --sql-path=${workspace.file_path}/sql/uc_governance.sql

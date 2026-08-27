@@ -16,21 +16,26 @@
 -- delete the `${catalog}.` prefixes.
 --
 -- Placeholders: ${catalog}, ${silver_schema}, ${gold_schema}, ${ops_schema},
---               ${analyst_principal}, ${ops_group}, ${engineer_group}
+--               ${platform_user}
 -- An unknown placeholder makes the runner fail loudly rather than emit broken SQL.
 --
 -- ===========================================================================
--- WHY THE PRINCIPALS ARE PARAMETERS
+-- ONE PRINCIPAL, NO GROUPS
 -- ===========================================================================
--- Databricks Free Edition has no account console and therefore no account
--- groups. `GRANT ... TO \`data-analysts\`` fails there with "principal not
--- found", which would make this whole file unrunnable on the one edition it is
--- meant to run on. So the principal is a bundle variable: the deploying user on
--- dev, a group on a real workspace.
+-- Free Edition has no account console, so there are no account groups and no
+-- service principals -- just one human. `GRANT ... TO `data-analysts`` fails
+-- there with "principal not found", and `is_account_group_member('anything')`
+-- can only ever answer false.
 --
--- `is_account_group_member('<group that does not exist>')` returns false rather
--- than failing, so on Free Edition the masks stay ON for everyone -- the safe
--- direction to fail, and worth knowing before you conclude "the mask is broken".
+-- So the predicates ask `current_user()` instead. The masks and the row filter
+-- are real, attached to real columns, and enforced by UC on every read path --
+-- they are simply transparent to the one user who owns the data. On a workspace
+-- with groups you swap one function body:
+--
+--   current_user() = '${platform_user}'   ->   is_account_group_member('collections-ops')
+--
+-- and nothing else in this file changes. That substitution is the whole
+-- difference between this and a "real" governance setup.
 --
 -- ===========================================================================
 -- WHY THIS IS NOT DONE IN THE PIPELINE
@@ -47,14 +52,14 @@
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION ${catalog}.${gold_schema}.mask_phone(phone STRING)
 RETURN CASE
-         WHEN is_account_group_member('${ops_group}') THEN phone
+         WHEN current_user() = '${platform_user}' THEN phone
          ELSE concat('***', right(regexp_replace(phone, '[^0-9]', ''), 4))
        END;
 
 CREATE OR REPLACE FUNCTION ${catalog}.${gold_schema}.mask_pseudonym(p STRING)
 RETURN CASE
-         WHEN is_account_group_member('${engineer_group}') THEN p
-         ELSE NULL   -- analysts get aggregates, not join keys
+         WHEN current_user() = '${platform_user}' THEN p
+         ELSE NULL   -- everyone else gets aggregates, not join keys
        END;
 
 -- Applied to silver.cases, where the pseudonymised/masked columns actually live
@@ -83,9 +88,14 @@ ALTER TABLE ${catalog}.${ops_schema}.cases_quarantine
 -- ---------------------------------------------------------------------------
 -- An analyst assigned to one client must not see another client's cases.
 -- Relevant on the Servicing side, where the data belongs to the client, not us.
+--
+-- With groups this reads `is_account_group_member(concat('client-',
+-- lower(client_id)))` -- per-client visibility from one function. Without them
+-- the honest version is default-deny: the platform user sees everything, and
+-- anyone added to this workspace later sees nothing until the predicate is
+-- widened deliberately.
 CREATE OR REPLACE FUNCTION ${catalog}.${gold_schema}.client_row_filter(client_id STRING)
-RETURN is_account_group_member('servicing-all-clients')
-       OR is_account_group_member(concat('client-', lower(client_id)));
+RETURN current_user() = '${platform_user}';
 
 ALTER TABLE ${catalog}.${gold_schema}.fct_servicing_performance
   SET ROW FILTER ${catalog}.${gold_schema}.client_row_filter ON (client_id);
@@ -93,18 +103,20 @@ ALTER TABLE ${catalog}.${gold_schema}.fct_servicing_performance
 -- ---------------------------------------------------------------------------
 -- 3. Grants
 -- ---------------------------------------------------------------------------
-GRANT USE CATALOG ON CATALOG ${catalog} TO `${analyst_principal}`;
-GRANT USE SCHEMA, SELECT ON SCHEMA ${catalog}.${gold_schema} TO `${analyst_principal}`;
+-- On a workspace with exactly one principal there is nothing to grant: the
+-- platform user owns every securable here and holds every privilege by
+-- ownership. These two statements are therefore no-ops that succeed -- kept
+-- because they document the intended read surface, and because the moment a
+-- second principal exists they are the lines you edit.
+GRANT USE CATALOG ON CATALOG ${catalog} TO `${platform_user}`;
+GRANT USE SCHEMA, SELECT ON SCHEMA ${catalog}.${gold_schema} TO `${platform_user}`;
 
--- Analysts get gold and nothing else. silver holds pseudonym join keys; ops
--- holds rejected rows that never passed DQ -- an analyst querying either will
--- produce a number that is wrong in a way nobody can reproduce.
---
--- REVOKE only removes explicit grants: it never takes away privileges the
--- principal holds by owning the object, so running this as yourself on Free
--- Edition does not lock you out of your own schemas.
-REVOKE ALL PRIVILEGES ON SCHEMA ${catalog}.${silver_schema} FROM `${analyst_principal}`;
-REVOKE ALL PRIVILEGES ON SCHEMA ${catalog}.${ops_schema}    FROM `${analyst_principal}`;
+-- What is deliberately NOT here: `REVOKE ALL PRIVILEGES ON SCHEMA silver/ops
+-- FROM <analyst group>`. With groups, that is the important half -- analysts get
+-- gold and nothing else, because silver holds pseudonym join keys and ops holds
+-- rows that never passed DQ. With one principal it would mean revoking from the
+-- owner: at best a no-op, at worst an error, and either way theatre. Add it back
+-- the same day you add the second user.
 
 -- ---------------------------------------------------------------------------
 -- 4. Verify the masks actually attached

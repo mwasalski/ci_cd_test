@@ -29,7 +29,7 @@ exactly that, which drives most of its non-obvious choices:
 | Environment version **5** = Databricks Connect 18 / Spark 4 / Python 3.12 | pinned in one bundle variable and in `pyproject.toml`'s `[tool.databricks.environment]`; the two must move together |
 | **ANSI mode is on** (Spark 4 default) | landed strings are cast with `try_cast` in `ingest.conform()`, never with a plain `cast` that would kill the job for one bad row; `tests/conftest.py` turns ANSI on locally so the laptop and the job agree |
 | `input_file_name()` unsupported | `_source_file` comes from `_metadata.file_path` |
-| No account console, so no account groups | governance principals are bundle variables: the deploying user on dev, a group on a real workspace |
+| No account console: no groups, no service principals | one `platform_user` variable stands in for all of them — `run_as`, job permissions (`CAN_MANAGE`), grants, and the mask predicates, which compare `current_user()` instead of asking about group membership |
 | No cluster to attach to | `get_spark()` returns the *existing* session; building one would try to set a static conf on a live Connect session |
 
 ## Quick start
@@ -230,9 +230,14 @@ a correct outcome, and an expensive way to discover you edited one of the two.
   serverless is worth verifying before promising it in a pipeline.
 - No FX conversion, despite multi-currency data. Deliberate: it needs a rate
   dimension with an as-of join, which is the same SCD2 pattern as the commission rate.
-- The `prod` target is aspirational on Free Edition: it needs a service
-  principal and account groups, neither of which exists there. It also still
-  deploys to `/Workspace/Shared`, which `bundle validate -t prod` correctly
-  warns is writable by all workspace users.
+- **No groups, no service principals, anywhere.** This workspace has one
+  principal, so `prod` differs from `dev` by the catalog and the landing path
+  and nothing else. Three things a paid workspace would change, all of them
+  one-liners: `run_as` becomes a service principal (it survives people leaving),
+  `permissions` name groups, and the mask/row-filter predicates go back to
+  `is_account_group_member(...)`. The `REVOKE ALL PRIVILEGES ON SCHEMA
+  silver/ops` pair — the half of the grant story that actually protects
+  anything — is commented out for the same reason: with one principal it would
+  revoke from the owner.
 - `ALTER TABLE ... SET MASK` re-runs are unverified on environment version 5 —
   see the note in `sql/uc_governance.sql`.
