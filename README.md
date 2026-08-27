@@ -26,8 +26,9 @@ databricks configure                     # or set DATABRICKS_HOST / _TOKEN
 databricks secrets create-scope collections
 databricks secrets put-secret collections pii_pepper
 
-# 3. build the wheel the DAB references
-pip install build && python -m build --wheel
+# 3. the CLI builds the wheel itself (see `artifacts:` in databricks.yml),
+#    so the build backend just has to be importable
+pip install build
 
 # 4. validate, deploy, run
 databricks bundle validate -t dev

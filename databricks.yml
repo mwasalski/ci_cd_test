@@ -14,6 +14,16 @@ bundle:
 include:
   - resources/*.yml
 
+# The CLI builds the wheel itself during `bundle deploy`, so the artifact can
+# never be stale relative to the code being deployed. Building it by hand in a
+# separate step is how you deploy last week's wheel and spend an hour wondering
+# why your fix did not take effect.
+artifacts:
+  default:
+    type: whl
+    build: python -m build --wheel
+    path: .
+
 variables:
   catalog:
     description: Unity Catalog catalog for this target.
