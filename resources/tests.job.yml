@@ -1,0 +1,83 @@
+resources:
+  jobs:
+    # ---------------------------------------------------------------------
+    # unit_tests: no catalog access, no real data. Runs the pytest suite on a
+    # single-node cluster. This is the job your CI calls on every PR.
+    # ---------------------------------------------------------------------
+    unit_tests:
+      name: "[${bundle.target}] unit_tests"
+      tasks:
+        - task_key: pytest
+          new_cluster:
+            spark_version: ${var.spark_version}
+            node_type_id: ${var.node_type}
+            num_workers: 0
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.master: "local[*, 4]"
+              spark.databricks.cluster.profile: singleNode
+            custom_tags:
+              ResourceClass: SingleNode
+          python_wheel_task:
+            package_name: collections_platform
+            entry_point: run-tests
+            parameters:
+              - --path=/Workspace${workspace.file_path}/tests
+              - --markers=not smoke
+          libraries:
+            - whl: ../dist/*.whl
+            - pypi: { package: "pytest>=8.0" }
+            - pypi: { package: "chispa>=0.10" }
+
+    # ---------------------------------------------------------------------
+    # smoke_test: runs AFTER deploy against the real catalog. It answers one
+    # question -- "is the deployed thing alive and are the contracts intact?"
+    # It is not a correctness suite. Keep it under ~5 minutes or people will
+    # start skipping it.
+    # ---------------------------------------------------------------------
+    smoke_test:
+      name: "[${bundle.target}] smoke_test"
+      tasks:
+        - task_key: smoke
+          new_cluster:
+            spark_version: ${var.spark_version}
+            node_type_id: ${var.node_type}
+            num_workers: 0
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.master: "local[*, 4]"
+              spark.databricks.cluster.profile: singleNode
+            custom_tags:
+              ResourceClass: SingleNode
+          python_wheel_task:
+            package_name: collections_platform
+            entry_point: run-smoke
+            parameters:
+              - --catalog=${var.catalog}
+              - --gold-schema=${var.gold_schema}
+              - --max-staleness-hours=26
+          libraries:
+            - whl: ../dist/*.whl
+
+    # ---------------------------------------------------------------------
+    # seed_synthetic: generates the pathological dataset into the landing
+    # volume. Run once on dev before anything else.
+    # ---------------------------------------------------------------------
+    seed_synthetic:
+      name: "[${bundle.target}] seed_synthetic"
+      tasks:
+        - task_key: seed
+          new_cluster:
+            spark_version: ${var.spark_version}
+            node_type_id: ${var.node_type}
+            num_workers: 1
+            data_security_mode: SINGLE_USER
+          python_wheel_task:
+            package_name: collections_platform
+            entry_point: seed-synthetic
+            parameters:
+              - --landing-path=${var.landing_path}
+              - --n-cases=200000
+              - --skew-factor=0.4     # 40% of payments land on one portfolio
+          libraries:
+            - whl: ../dist/*.whl
