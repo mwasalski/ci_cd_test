@@ -35,7 +35,6 @@ variables:
   gold_schema:
     default: gold
   ops_schema:
-    description: Quarantine, DQ metrics, run audit. Not analyst-facing.
     default: ops
   landing_path:
     description: Volume path where raw originator portfolio files land.
@@ -43,18 +42,18 @@ variables:
   pii_secret_scope:
     description: Secret scope holding the pseudonymisation pepper.
     default: collections
-  node_type:
-    description: Azure worker type. Small on dev, real on prod.
-    default: Standard_DS3_v2
-  spark_version:
-    default: "15.4.x-scala2.12"   # DBR 15.4 LTS -> Spark 3.5
+  # node_type: # no need to use node type while on serverless
+  #   description: Azure worker type. Small on dev, real on prod.
+  #   default: Standard_DS3_v2
+  # spark_version:
+  #   default: "15.4.x-scala2.12"   # DBR 15.4 LTS -> Spark 3.5
 
 targets:
   dev:
     mode: development          # prefixes resources with [dev <user>], pauses schedules
     default: true
     workspace:
-      host: https://adb-0000000000000000.0.azuredatabricks.net
+      host: https://dbc-2b69cffc-7563.cloud.databricks.com/
     variables:
       catalog: dev_collections
       landing_path: /Volumes/dev_collections/bronze/landing
@@ -62,15 +61,17 @@ targets:
   prod:
     mode: production           # blocks deploy if the git tree is dirty
     workspace:
-      host: https://adb-0000000000000000.0.azuredatabricks.net
-      root_path: /Shared/.bundle/prod/${bundle.name}
+      host: https://dbc-2b69cffc-7563.cloud.databricks.com/
+      root_path: /Users/moustache.data@gmail.com/.bundle/prod/${bundle.name}
     variables:
       catalog: prod_collections
       landing_path: /Volumes/prod_collections/bronze/landing
-      node_type: Standard_D8ds_v5
+      # node_type: Standard_D8ds_v5
     run_as:
-      # Never run prod as a human. A service principal survives people leaving.
-      service_principal_name: sp-collections-platform
+      # TODO: Switch to service principal for production (sp-collections-platform)
+      user_name: moustache.data@gmail.com
     permissions:
-      - level: CAN_VIEW
-        group_name: data-engineers
+      - user_name: moustache.data@gmail.com
+        level: CAN_MANAGE
+      # - level: CAN_VIEW
+      #   group_name: data-engineers
