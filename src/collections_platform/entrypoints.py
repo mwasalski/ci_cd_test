@@ -35,6 +35,32 @@ def _get_pepper(scope: str, key: str = "pii_pepper") -> str:
         ) from exc
 
 
+def bootstrap_catalog(argv: list[str] | None = None) -> None:
+    """Create catalog/schemas/volume/reference tables. Idempotent, run first."""
+    import argparse
+
+    from .bootstrap import BootstrapPlan, bootstrap, verify
+
+    p = argparse.ArgumentParser()
+    p.add_argument("--catalog", required=True)
+    p.add_argument("--managed-location", default=None)
+    # Default OFF: creating a catalog needs metastore privilege the pipeline SP
+    # should not hold. Pass --create-catalog only when bootstrapping your own
+    # workspace, where you are the metastore admin anyway.
+    p.add_argument("--create-catalog", action="store_true")
+    ns, _ = p.parse_known_args(argv)
+
+    spark = get_spark()
+    plan = BootstrapPlan(
+        catalog=ns.catalog,
+        managed_location=ns.managed_location,
+        create_catalog=ns.create_catalog,
+    )
+    with timed("bootstrap", catalog=ns.catalog):
+        bootstrap(spark, plan)
+        verify(spark, plan)   # never trust CREATE IF NOT EXISTS without checking
+
+
 def ingest_portfolio(argv: list[str] | None = None) -> None:
     from .dq import apply_rules, assert_error_rate_below, case_rules, dedupe
     from .ingest import detect_drift, enforce_drift_policy, read_landing
@@ -58,12 +84,19 @@ def ingest_portfolio(argv: list[str] | None = None) -> None:
         result = apply_rules(deduped, case_rules())
         assert_error_rate_below(result.metrics, threshold=0.10)
 
-        clean = apply_pii_policy(result.clean, _get_pepper(cfg.pii_scope))
+        pepper = _get_pepper(cfg.pii_scope)
+
+        # PII policy is applied to BOTH branches. A quarantined row is still
+        # personal data -- and the quarantine table is exactly the one people
+        # forget, because it is "just the rejects". It is also the table an
+        # engineer is most likely to `SELECT *` from while debugging.
+        clean = apply_pii_policy(result.clean, pepper)
+        quarantined = apply_pii_policy(result.quarantined, pepper)
 
         write_delta(clean, str(cfg.table(cfg.schema, "cases")), mode="overwrite")
         write_delta(
-            result.quarantined,
-            str(cfg.table(cfg.schema, "cases_quarantine")),
+            quarantined,
+            str(cfg.table(cfg.ops_schema, "cases_quarantine")),
             mode="append",
         )
 

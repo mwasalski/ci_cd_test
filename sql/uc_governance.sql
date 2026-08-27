@@ -26,10 +26,18 @@ RETURN CASE
          ELSE NULL   -- analysts get aggregates, not join keys
        END;
 
-ALTER TABLE ${catalog}.gold.dim_debtor
+-- Applied to bronze.cases, which is where the pseudonymised/masked columns
+-- actually live (apply_pii_policy runs on write to bronze, so raw PII is never
+-- persisted anywhere in this catalog).
+ALTER TABLE ${catalog}.bronze.cases
   ALTER COLUMN debtor_phone_masked SET MASK ${catalog}.gold.mask_phone;
 
-ALTER TABLE ${catalog}.gold.dim_debtor
+ALTER TABLE ${catalog}.bronze.cases
+  ALTER COLUMN national_id_pseudonym SET MASK ${catalog}.gold.mask_pseudonym;
+
+-- The quarantine table gets the same treatment. It is the one people forget,
+-- and the one an engineer is most likely to `SELECT *` from while debugging.
+ALTER TABLE ${catalog}.ops.cases_quarantine
   ALTER COLUMN national_id_pseudonym SET MASK ${catalog}.gold.mask_pseudonym;
 
 -- ---------------------------------------------------------------------------
@@ -49,7 +57,12 @@ ALTER TABLE ${catalog}.gold.fct_servicing_performance
 -- ---------------------------------------------------------------------------
 GRANT USE CATALOG ON CATALOG ${catalog} TO `data-analysts`;
 GRANT USE SCHEMA, SELECT ON SCHEMA ${catalog}.gold TO `data-analysts`;
+
+-- Analysts get gold and nothing else. bronze holds pseudonym join keys; ops
+-- holds rejected rows that never passed DQ -- an analyst querying either will
+-- produce a number that is wrong in a way nobody can reproduce.
 REVOKE ALL PRIVILEGES ON SCHEMA ${catalog}.bronze FROM `data-analysts`;
+REVOKE ALL PRIVILEGES ON SCHEMA ${catalog}.ops    FROM `data-analysts`;
 
 -- ---------------------------------------------------------------------------
 -- 4. Verify the masks are actually attached. Run this in the smoke job too --

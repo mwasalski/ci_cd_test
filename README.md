@@ -30,14 +30,37 @@ databricks secrets put-secret collections pii_pepper
 #    so the build backend just has to be importable
 pip install build
 
-# 4. validate, deploy, run
+# 4. create the catalog ONCE (you are the metastore admin on your own workspace;
+#    at a real employer this half is Terraform's job, not the pipeline repo's)
+databricks sql -f sql/00_bootstrap.sql --warehouse-id <id>
+
+# 5. validate, deploy, run
 databricks bundle validate -t dev
 databricks bundle deploy   -t dev
-databricks bundle run seed_synthetic     -t dev   # generate pathological data
+databricks bundle run bootstrap          -t dev   # schemas, volume, reference tables
+databricks bundle run seed_synthetic     -t dev   # pathological data into the volume
 databricks bundle run unit_tests         -t dev
 databricks bundle run collections_pipeline -t dev
 databricks bundle run smoke_test         -t dev
+
+# 6. masks, row filters, grants (after the tables exist)
+databricks sql -f sql/uc_governance.sql --warehouse-id <id>
 ```
+
+### Who creates what, and why the split matters
+
+| Object | Created by | Why there |
+|---|---|---|
+| metastore, storage credential, **catalog** | Terraform / metastore admin, once | needs metastore-level privilege. If the pipeline's service principal can `CREATE CATALOG`, then a bug — or anyone who can merge a PR — can create or drop catalogs in prod. |
+| **schemas, volume** | `resources/schemas.yml` + `bootstrap` job | bundle-owned, so a fresh target works from one `deploy` |
+| **fact/dim tables** | the jobs, via `saveAsTable` | schema follows the code that writes them |
+| **reference tables** (`portfolios`, `client_contracts`, `forecast_curve`) | `bootstrap` | must exist *before* the first run, with explicit types — not inferred from whatever CSV landed first |
+| **masks, row filters, grants** | `sql/uc_governance.sql` | enforced by UC on every read path, not by the pipeline |
+
+The pipeline jobs issue **no DDL at all**. That is deliberate: it means the
+pipeline service principal never needs `CREATE` on the catalog, so a bug in a
+transform cannot drop a schema. Least privilege is much easier to argue for when
+the code layout already reflects it.
 
 Local loop (faster, less faithful):
 
@@ -52,6 +75,7 @@ pytest -m "not smoke" -v
 
 | File | The point |
 |---|---|
+| `bootstrap.py` | DDL lives outside the pipeline. Every statement idempotent, and `verify()` checks it actually took effect — a `CREATE IF NOT EXISTS` that no-op'd because you were pointed at the wrong catalog is a real failure mode. |
 | `pii.py` | HMAC-with-a-pepper, not a bare hash. A PESEL has too small a value space for `sha2()` to be irreversible. |
 | `pii.py::assert_no_raw_pii` | A guard called before every gold write. Turns a compliance incident into a failed job. |
 | `pii.py::assert_registry_covers` | Catches the *drift × PII* intersection: an originator adds `debtor_mobile` next quarter. |

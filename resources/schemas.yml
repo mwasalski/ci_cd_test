@@ -1,0 +1,63 @@
+# Schemas and volumes as bundle resources.
+#
+# Why declare them here when sql/00_bootstrap.sql already creates them:
+# the bundle becomes self-sufficient. `bundle deploy` on a fresh workspace gives
+# you a working target without anyone remembering to run a SQL file first.
+# CREATE ... IF NOT EXISTS in the SQL and a declared resource here are both
+# idempotent, so whichever runs second is a no-op.
+#
+# The catalog is deliberately NOT declared here -- see the header of
+# sql/00_bootstrap.sql. Creating catalogs needs metastore-level privilege that a
+# pipeline service principal should not hold.
+#
+# ---------------------------------------------------------------------------
+# WARNING worth internalising before you use this in anger
+# ---------------------------------------------------------------------------
+# A schema declared as a bundle resource is OWNED by the bundle. `bundle destroy`
+# removes it, and in `mode: development` a rename in this file is a drop-and-
+# recreate. For dev with synthetic data that is fine and even useful. For a
+# schema holding data you cannot regenerate, declare it once outside the bundle
+# instead and let the bundle only write tables into it.
+#
+# NOTE: I am not certain the `volumes` resource type exists in every Databricks
+# CLI version -- it is recent. If `bundle validate` rejects it, drop that block
+# and let sql/00_bootstrap.sql create the volume; nothing else depends on it
+# being bundle-managed.
+
+resources:
+  schemas:
+    bronze:
+      catalog_name: ${var.catalog}
+      name: ${var.bronze_schema}
+      comment: >-
+        Landed originator data. PII is pseudonymised on write --
+        raw PII is never persisted anywhere in this catalog.
+
+    silver:
+      catalog_name: ${var.catalog}
+      name: ${var.silver_schema}
+      comment: Conformed, deduplicated, DQ-checked.
+
+    gold:
+      catalog_name: ${var.catalog}
+      name: ${var.gold_schema}
+      comment: Investing and Servicing fact domains. Analyst-facing.
+
+    ops:
+      catalog_name: ${var.catalog}
+      name: ${var.ops_schema}
+      comment: >-
+        Quarantine, DQ metrics, run audit. Separate from the clean schemas so
+        analysts cannot join rejected rows by accident, and so it can carry a
+        different retention policy.
+
+  volumes:
+    landing:
+      catalog_name: ${var.catalog}
+      schema_name: ${resources.schemas.bronze.name}
+      name: landing
+      volume_type: MANAGED
+      comment: >-
+        Raw portfolio and payment files. MANAGED on dev; in production this
+        should be EXTERNAL over the SFTP drop the originators deliver to, so
+        there is no copy step between "the file arrived" and "we can read it".

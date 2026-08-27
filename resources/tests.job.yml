@@ -1,6 +1,39 @@
 resources:
   jobs:
     # ---------------------------------------------------------------------
+    # bootstrap: creates schemas, the landing volume and the reference tables.
+    # Run ONCE, before anything else, on a fresh target.
+    #
+    # Not part of collections_pipeline on purpose. DDL on every pipeline run
+    # means the pipeline's service principal needs CREATE privileges forever,
+    # and it hides "the schema did not exist" behind "the job succeeded".
+    # ---------------------------------------------------------------------
+    bootstrap:
+      name: "[${bundle.target}] bootstrap"
+      tasks:
+        - task_key: create_objects
+          new_cluster:
+            spark_version: ${var.spark_version}
+            node_type_id: ${var.node_type}
+            num_workers: 0
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.master: "local[*, 4]"
+              spark.databricks.cluster.profile: singleNode
+            custom_tags:
+              ResourceClass: SingleNode
+          python_wheel_task:
+            package_name: collections_platform
+            entry_point: bootstrap-catalog
+            parameters:
+              - --catalog=${var.catalog}
+              # --create-catalog is NOT passed here. On a shared workspace the
+              # catalog is created once by an admin (sql/00_bootstrap.sql).
+              # Add it only on your own workspace, where you are that admin.
+          libraries:
+            - whl: ../dist/*.whl
+
+    # ---------------------------------------------------------------------
     # unit_tests: no catalog access, no real data. Runs the pytest suite on a
     # single-node cluster. This is the job your CI calls on every PR.
     # ---------------------------------------------------------------------

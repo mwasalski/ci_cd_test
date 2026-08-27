@@ -34,6 +34,9 @@ variables:
     default: silver
   gold_schema:
     default: gold
+  ops_schema:
+    description: Quarantine, DQ metrics, run audit. Not analyst-facing.
+    default: ops
   landing_path:
     description: Volume path where raw originator portfolio files land.
     default: /Volumes/dev_collections/bronze/landing
