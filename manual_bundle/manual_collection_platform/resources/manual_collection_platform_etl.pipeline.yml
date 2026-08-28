@@ -1,0 +1,20 @@
+# The main pipeline for manual_collection_platform
+
+resources:
+  pipelines:
+    manual_collection_platform_etl:
+      name: manual_collection_platform_etl
+      catalog: ${var.catalog}
+      schema: ${var.schema}
+      serverless: true
+      root_path: "../src/manual_collection_platform_etl"
+
+      libraries:
+        - glob:
+            include: ../src/manual_collection_platform_etl/transformations/**
+
+      environment:
+        dependencies:
+          # We include every dependency defined by pyproject.toml by defining an editable environment
+          # that points to the folder where pyproject.toml is deployed.
+          - --editable ${workspace.file_path}
