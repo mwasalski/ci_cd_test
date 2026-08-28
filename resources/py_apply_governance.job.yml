@@ -1,0 +1,44 @@
+# ---------------------------------------------------------------------------
+# apply_governance, file-based variant.
+#
+# Identical to resources/apply_governance.job.yml in everything that matters --
+# same code, same parameters, same result -- except that it runs jobs/main.py
+# from the synced workspace files instead of installing the wheel.
+#
+# The two differences that make it work:
+#   * spark_python_task + python_file, instead of python_wheel_task +
+#     package_name/entry_point;
+#   * jobs/main.py puts src/ on sys.path, because running a .py file is not the
+#     same as installing a package (see the header of that file).
+#
+# `python_file: ../jobs/main.py` is a path relative to THIS yaml file. The CLI
+# rewrites it to the deployed workspace location at deploy time, the same way it
+# rewrites ../dist/*.whl for the wheel jobs.
+# ---------------------------------------------------------------------------
+resources:
+  jobs:
+    py_apply_governance:
+      name: "[${bundle.target}] py_apply_governance"
+
+      environments:
+        - environment_key: default
+          spec:
+            # No `dependencies` here: there is no wheel to install, and the
+            # package has no runtime dependencies of its own. The moment it
+            # grows one, it has to be repeated here by hand -- which is exactly
+            # the bookkeeping the wheel does for you.
+            environment_version: ${var.environment_version}
+
+      tasks:
+        - task_key: governance
+          environment_key: default
+          spark_python_task:
+            python_file: ../jobs/main.py
+            parameters:
+              - --entrypoint=apply-governance
+              - --catalog=${var.catalog}
+              - --silver-schema=${var.silver_schema}
+              - --gold-schema=${var.gold_schema}
+              - --ops-schema=${var.ops_schema}
+              - --platform-user=${var.platform_user}
+              - --sql-path=${workspace.file_path}/sql/uc_governance.sql

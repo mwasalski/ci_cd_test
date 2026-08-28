@@ -27,7 +27,11 @@ include:
 artifacts:
   default:
     type: whl
-    build: python -m build --wheel
+    # `python3`, not `python`: the CLI runs this through /bin/bash without your
+    # virtualenv activated, and a stock macOS + python.org install has no
+    # `python` on PATH at all. `uv build --wheel` works too if you prefer it --
+    # the CLI only cares that a .whl lands in dist/.
+    build: python3 -m build --wheel
     path: .
 
 variables:

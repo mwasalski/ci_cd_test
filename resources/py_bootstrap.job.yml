@@ -1,0 +1,22 @@
+# bootstrap, file-based variant. See resources/py_apply_governance.job.yml for
+# what differs from the wheel jobs and why.
+resources:
+  jobs:
+    py_bootstrap:
+      name: "[${bundle.target}] py_bootstrap"
+
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: ${var.environment_version}
+
+      tasks:
+        - task_key: create_objects
+          environment_key: default
+          spark_python_task:
+            python_file: ../jobs/main.py
+            parameters:
+              - --entrypoint=bootstrap-catalog
+              - --catalog=${var.catalog}
+              # --create-catalog stays off: creating a catalog needs metastore
+              # privilege the pipeline identity should not hold.

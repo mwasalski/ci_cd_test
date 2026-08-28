@@ -67,6 +67,55 @@ pipeline (nothing to read otherwise), and `apply_governance` comes after it
 (`ALTER TABLE ... SET MASK` needs the table to exist, and the pipeline's
 `overwrite` replaces it).
 
+### Two ways to ship the same code: wheel vs files
+
+Every job exists twice. `resources/*.job.yml` ships a **wheel**;
+`resources/py_*.job.yml` runs the **source files** the bundle syncs. Same
+functions, same parameters, same results — the only difference is how the code
+reaches the compute, which makes them a side-by-side comparison rather than two
+implementations to keep in step.
+
+```yaml
+# wheel: resolved from the installed distribution's entry-point metadata
+python_wheel_task:
+  package_name: collections_platform
+  entry_point: apply-governance          # a key in [project.scripts]
+
+# files: a path, and a script that has to find its own imports
+spark_python_task:
+  python_file: ../jobs/main.py
+  parameters: [--entrypoint=apply-governance, ...]
+```
+
+The catch with files is not the YAML, it's Python: running a `.py` puts *that
+file's directory* on `sys.path`, which is not the same as installing a package.
+
+```
+$ python src/collections_platform/entrypoints.py --catalog dev
+ImportError: attempted relative import with no known parent package
+```
+
+So [jobs/main.py](jobs/main.py) puts `src/` on the path before importing
+anything, and dispatches on `--entrypoint`. That one line is exactly the job a
+wheel does for you — and the rest of the trade is:
+
+| | wheel | files |
+|---|---|---|
+| what ran | one versioned artifact | whatever is in the workspace directory right now, editable in the UI without a PR |
+| dependencies | `[project.dependencies]` installed for you | repeated by hand in every job's `environments` block |
+| bad entry-point name | fails at deploy, from metadata | fails at run time, minutes in |
+| iteration | rebuild on every deploy | edit, deploy, run |
+
+Use the wheel jobs for anything anyone else depends on; the `py_*` ones are for
+shaping a job before it settles. `tests/test_job_dispatcher.py` asserts the two
+sets stay in sync — same job names, same entry-point names, same functions —
+because the failure mode of a drifted dispatcher is a job that runs happily and
+does the wrong thing.
+
+Note that even the wheel jobs point at files where files are the right unit:
+pytest gets `${workspace.file_path}/tests` and the governance runner gets a path
+to `uc_governance.sql`. Code → wheel, tests and resources → workspace files.
+
 ### `${catalog}` in a .sql file
 
 Bundle variable interpolation (`${var.catalog}`, `${workspace.file_path}`) is

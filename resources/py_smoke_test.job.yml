@@ -1,0 +1,21 @@
+# smoke_test, file-based variant. See resources/py_apply_governance.job.yml.
+resources:
+  jobs:
+    py_smoke_test:
+      name: "[${bundle.target}] py_smoke_test"
+
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: ${var.environment_version}
+
+      tasks:
+        - task_key: smoke
+          environment_key: default
+          spark_python_task:
+            python_file: ../jobs/main.py
+            parameters:
+              - --entrypoint=run-smoke
+              - --catalog=${var.catalog}
+              - --gold-schema=${var.gold_schema}
+              - --max-staleness-hours=26

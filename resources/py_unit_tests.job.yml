@@ -1,0 +1,36 @@
+# unit_tests, file-based variant. See resources/py_apply_governance.job.yml.
+#
+# This is the variant where "no wheel" costs the least: pytest wants FILES, and
+# the tests are not in the wheel anyway (`where = ["src"]` in pyproject.toml
+# packages src/ only). Even the wheel job points pytest at the workspace path.
+#
+# The one thing that changes: without the installed wheel, `import
+# collections_platform` inside the tests resolves through the sys.path entry
+# that jobs/main.py adds -- so the suite imports the source tree rather than an
+# installed artifact.
+resources:
+  jobs:
+    py_unit_tests:
+      name: "[${bundle.target}] py_unit_tests"
+
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: ${var.environment_version}
+            dependencies:
+              # Still needed: these are test-only libraries, and nothing
+              # installs them for us here.
+              - pytest>=8.0
+              - chispa>=0.10
+              # tests/test_job_dispatcher.py reads the job YAML itself.
+              - pyyaml>=6.0
+
+      tasks:
+        - task_key: pytest
+          environment_key: default
+          spark_python_task:
+            python_file: ../jobs/main.py
+            parameters:
+              - --entrypoint=run-tests
+              - --path=${workspace.file_path}/tests
+              - --markers=not smoke

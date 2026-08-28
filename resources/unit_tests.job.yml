@@ -22,6 +22,8 @@ resources:
               # future environment version drops it.
               - pytest>=8.0
               - chispa>=0.10
+              # tests/test_job_dispatcher.py reads the job YAML itself.
+              - pyyaml>=6.0
 
       tasks:
         - task_key: pytest

@@ -1,0 +1,23 @@
+# seed_synthetic, file-based variant. See resources/py_apply_governance.job.yml.
+resources:
+  jobs:
+    py_seed_synthetic:
+      name: "[${bundle.target}] py_seed_synthetic"
+
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: ${var.environment_version}
+
+      tasks:
+        - task_key: seed
+          environment_key: default
+          spark_python_task:
+            python_file: ../jobs/main.py
+            parameters:
+              - --entrypoint=seed-synthetic
+              - --landing-path=${var.landing_path}
+              - --catalog=${var.catalog}
+              - --ref-schema=${var.silver_schema}
+              - --n-cases=50000
+              - --skew-factor=0.4

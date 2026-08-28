@@ -1,0 +1,90 @@
+# collections_pipeline, file-based variant. See resources/py_apply_governance.job.yml.
+#
+# Worth noticing on a multi-task job: the task graph, the parameters and the
+# environment are identical to the wheel version. Only the two lines that say
+# *how the code gets there* differ, per task. That is the honest way to compare
+# the two approaches -- everything else is a constant.
+resources:
+  jobs:
+    py_collections_pipeline:
+      name: "[${bundle.target}] py_collections_pipeline"
+
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: ${var.environment_version}
+
+      tasks:
+        - task_key: ingest_cases
+          environment_key: default
+          spark_python_task:
+            python_file: ../jobs/main.py
+            parameters:
+              - --entrypoint=ingest-portfolio
+              - --catalog=${var.catalog}
+              - --schema=${var.silver_schema}
+              - --ops-schema=${var.ops_schema}
+              - --landing-path=${var.landing_path}/cases
+              - --pii-scope=${var.pii_secret_scope}
+
+        - task_key: ingest_payments
+          environment_key: default
+          spark_python_task:
+            python_file: ../jobs/main.py
+            parameters:
+              - --entrypoint=ingest-payments
+              - --catalog=${var.catalog}
+              - --schema=${var.silver_schema}
+              - --ops-schema=${var.ops_schema}
+              - --landing-path=${var.landing_path}/payments
+
+        - task_key: build_investing
+          depends_on:
+            - { task_key: ingest_cases }
+            - { task_key: ingest_payments }
+          environment_key: default
+          spark_python_task:
+            python_file: ../jobs/main.py
+            parameters:
+              - --entrypoint=build-investing
+              - --catalog=${var.catalog}
+              - --source-schema=${var.silver_schema}
+              - --target-schema=${var.gold_schema}
+
+        - task_key: build_servicing
+          depends_on:
+            - { task_key: ingest_cases }
+            - { task_key: ingest_payments }
+          environment_key: default
+          spark_python_task:
+            python_file: ../jobs/main.py
+            parameters:
+              - --entrypoint=build-servicing
+              - --catalog=${var.catalog}
+              - --source-schema=${var.silver_schema}
+              - --target-schema=${var.gold_schema}
+
+        - task_key: build_features
+          depends_on:
+            - { task_key: build_investing }
+            - { task_key: build_servicing }
+          environment_key: default
+          spark_python_task:
+            python_file: ../jobs/main.py
+            parameters:
+              - --entrypoint=build-features
+              - --catalog=${var.catalog}
+              - --source-schema=${var.silver_schema}
+              - --target-schema=${var.gold_schema}
+              - --as-of-date={{job.parameters.as_of_date}}
+
+      parameters:
+        - name: as_of_date
+          default: "{{job.start_time.iso_date}}"
+
+      email_notifications:
+        on_failure:
+          - m.wasalski@gmail.com
+
+      queue:
+        enabled: true
